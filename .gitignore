@@ -95,7 +95,7 @@ settings.json
 
 models/*.bin
 models/*.gguf
-assets/models/*.binassets/models/*.bin
+assets/models/*.bin
 models/*.bin
 assets/models/.bin
 models/.bin
