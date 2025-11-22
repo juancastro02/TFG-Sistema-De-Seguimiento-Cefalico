@@ -1,0 +1,99 @@
+# ===== Dependencies =====
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ===== Build outputs =====
+dist/
+build/
+out/
+*.js.map
+*.d.ts.map
+
+# ===== Python =====
+py/.venv/
+py/__pycache__/
+py/*.pyc
+py/*.pyo
+py/*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+pip-log.txt
+
+# ===== Whisper.cpp =====
+whisper.cpp/
+
+# whisper.cpp/build/
+# whisper.cpp/models/*.bin
+# whisper.cpp/*.bin
+# models/*.bin
+# models/*.gguf
+
+
+# ===== Environment variables =====
+.env
+.env.local
+.env.*.local
+.venv
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===== Electron =====
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== OS =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== Temporary files =====
+*.tmp
+*.temp
+.cache/
+.parcel-cache/
+
+# ===== Coverage & Testing =====
+coverage/
+.nyc_output/
+*.lcov
+
+# ===== Compiled binaries =====
+*.exe
+*.dmg
+*.app
+*.deb
+*.rpm
+*.snap
+
+# ===== User data =====
+electron-store/
+profiles.json
+settings.json
+
+# ===== Large files =====
+*.mp4
+*.mov
+*.avi
+*.wav
+*.mp3
+
+models/*.bin
+models/*.gguf
+assets/models/*.binassets/models/*.bin
+models/*.bin
