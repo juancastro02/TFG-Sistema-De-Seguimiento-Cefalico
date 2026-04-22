@@ -1,11 +1,11 @@
-import { throttle } from "../utils/throttle.js";
+import { DEFAULT_PROFILE_VALUES } from '../types/profile.js';
 
 export class EMA {
   private alpha: number;
   private x: number | null = null;
   private y: number | null = null;
 
-  constructor(alpha: number = 0.15) {
+  constructor(alpha: number = 0.24) {
     this.alpha = alpha;
   }
   
@@ -47,25 +47,28 @@ type Calib = {
 };
 
 const calib: Calib = {
-  neutralX: 0.5,
-  neutralY: 0.5,
-  gain: 0.6,
-  sensitivity: 1.2,
-  deadzone: 0.010,
-  maxSpeed: 1.0,
-  gazeAmplification: 1.8
+  neutralX: DEFAULT_PROFILE_VALUES.neutralX,
+  neutralY: DEFAULT_PROFILE_VALUES.neutralY,
+  gain: DEFAULT_PROFILE_VALUES.gain,
+  sensitivity: DEFAULT_PROFILE_VALUES.sensitivity,
+  deadzone: DEFAULT_PROFILE_VALUES.deadzone,
+  maxSpeed: DEFAULT_PROFILE_VALUES.maxSpeed,
+  gazeAmplification: DEFAULT_PROFILE_VALUES.gazeAmplification,
 };
 
 let paused = false;
 let dwellClickEnabled = false;
 let lastObsNorm: { x: number; y: number } | null = null;
-let ema = new EMA(0.15);
+let ema = new EMA(0.24);
 let currentScreenPos: { x: number; y: number } | null = null;
+let screenSize: { width: number; height: number } | null = null;
+let lastObservationAt = 0;
 
-type OnPose = (nx: number, ny: number) => void;
+type OnPose = (pose: { nx: number; ny: number } | null) => void;
 
 let mediaStream: MediaStream | null = null;
 let rafId: number | null = null;
+let movementRafId: number | null = null;
 let faceLandmarker: any = null;
 let videoRef: HTMLVideoElement | null = null;
 let runningMode: "VIDEO" = "VIDEO";
@@ -77,6 +80,8 @@ const MODEL_ASSET =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+const LOST_TRACKING_TIMEOUT_MS = 180;
 
 function extractGazePosition(landmarks: any[]): { x: number; y: number } {
   try {
@@ -111,8 +116,8 @@ function extractGazePosition(landmarks: any[]): { x: number; y: number } {
     
     const noseTip = landmarks[LANDMARKS.NOSE_TIP];
     
-    const x = (noseTip.x * 0.3) + ((0.5 + gazeX) * 0.7);
-    const y = (noseTip.y * 0.3) + ((0.5 + gazeY) * 0.7);
+    const x = (noseTip.x * 0.45) + ((0.5 + gazeX) * 0.55);
+    const y = (noseTip.y * 0.45) + ((0.5 + gazeY) * 0.55);
     
     return { x: clamp01(x), y: clamp01(y) };
     
@@ -124,6 +129,8 @@ function extractGazePosition(landmarks: any[]): { x: number; y: number } {
 }
 
 function calculateVelocity(nx: number, ny: number): [number, number] {
+  const RESPONSE_WINDOW = 0.18;
+
   let dx = nx - calib.neutralX;
   let dy = ny - calib.neutralY;
 
@@ -131,8 +138,8 @@ function calculateVelocity(nx: number, ny: number): [number, number] {
     const sign = Math.sign(value);
     const abs = Math.abs(value);
     if (abs < calib.deadzone) return 0;
-    const normalized = (abs - calib.deadzone) / (0.35 - calib.deadzone);
-    return sign * Math.min(normalized, 1.0);
+    const normalized = clamp((abs - calib.deadzone) / Math.max(RESPONSE_WINDOW - calib.deadzone, 0.001), 0, 1);
+    return sign * Math.pow(normalized, 0.82);
   };
 
   dx = applyDeadzone(dx);
@@ -144,12 +151,10 @@ function calculateVelocity(nx: number, ny: number): [number, number] {
 
   const magnitude = Math.hypot(dx, dy);
 
-  const acceleration = magnitude;
-
   const dirX = dx / magnitude;
   const dirY = dy / magnitude;
 
-  let baseSpeed = acceleration * calib.sensitivity * calib.gain;
+  let baseSpeed = (0.16 + magnitude * 0.94) * calib.sensitivity * calib.gain;
 
   const baseSpeedMag = Math.hypot(dirX * baseSpeed, dirY * baseSpeed);
   if (baseSpeedMag > calib.maxSpeed) {
@@ -157,47 +162,52 @@ function calculateVelocity(nx: number, ny: number): [number, number] {
     baseSpeed *= scale;
   }
 
-  let pixelMultiplier: number;
-  if (magnitude < 0.06) {
-    pixelMultiplier = 60;
-  } else if (magnitude < 0.15) {
-    pixelMultiplier = 90;
-  } else if (magnitude < 0.30) {
-    pixelMultiplier = 120;
-  } else {
-    pixelMultiplier = 135;
-  }
+  const pixelMultiplier = 10 + magnitude * 46;
 
-  const vx = dirX * baseSpeed * pixelMultiplier;
-  const vy = dirY * baseSpeed * pixelMultiplier;
+  let vx = dirX * baseSpeed * pixelMultiplier;
+  let vy = dirY * baseSpeed * pixelMultiplier;
+
+  const maxPixelsPerStep = 10 + calib.maxSpeed * 32;
+  const maxPixelsMagnitude = Math.hypot(vx, vy);
+  if (maxPixelsMagnitude > maxPixelsPerStep) {
+    const scale = maxPixelsPerStep / maxPixelsMagnitude;
+    vx *= scale;
+    vy *= scale;
+  }
 
   return [vx, vy];
 }
 
 let lastMoveTime = 0;
-const MOVE_INTERVAL = 10;
+const MOVE_INTERVAL = 16;
+
+async function refreshScreenSize() {
+  screenSize = await window.native.getScreenSize();
+  return screenSize;
+}
 
 async function movementLoop() {
   if (!movementLoopRunning) return;
 
   const now = performance.now();
   const elapsed = now - lastMoveTime;
+  const trackingIsFresh = Date.now() - lastObservationAt <= LOST_TRACKING_TIMEOUT_MS;
 
-  if (elapsed >= MOVE_INTERVAL && !paused && lastObsNorm && currentScreenPos) {
+  if (elapsed >= MOVE_INTERVAL && !paused && lastObsNorm && currentScreenPos && trackingIsFresh) {
     lastMoveTime = now;
     
     const [vx, vy] = calculateVelocity(lastObsNorm.x, lastObsNorm.y);
     
     if (Math.abs(vx) > 0.05 || Math.abs(vy) > 0.05) {
       try {
-        const { width, height } = await window.native.getScreenSize();
+        const { width, height } = screenSize ?? await refreshScreenSize();
         
         const timeFactor = Math.min(elapsed / MOVE_INTERVAL, 2.0);
         let newX = currentScreenPos.x + (vx * timeFactor);
         let newY = currentScreenPos.y + (vy * timeFactor);
 
-        newX = Math.max(0, Math.min(width - 1, newX));
-        newY = Math.max(0, Math.min(height - 1, newY));
+        newX = clamp(newX, 0, width - 1);
+        newY = clamp(newY, 0, height - 1);
 
         currentScreenPos = { x: newX, y: newY };
         await window.native.move(Math.round(newX), Math.round(newY));
@@ -207,7 +217,7 @@ async function movementLoop() {
     }
   }
 
-  requestAnimationFrame(movementLoop);
+  movementRafId = requestAnimationFrame(movementLoop);
 }
 
 export async function clickFromGesture(button: 'left'|'right'|'middle' = 'left') {
@@ -248,12 +258,15 @@ export function getDwellClickEnabled() {
   return dwellClickEnabled; 
 }
 
-export function applyCalibration(patch: Partial<Pick<Calib, 'gain'|'sensitivity'|'deadzone'|'maxSpeed'>>) {
+export function applyCalibration(patch: Partial<Calib>) {
   console.log('[headTracker] applyCalibration:', patch);
+  if (typeof patch.neutralX === 'number') calib.neutralX = clamp01(patch.neutralX);
+  if (typeof patch.neutralY === 'number') calib.neutralY = clamp01(patch.neutralY);
   if (typeof patch.gain === 'number') calib.gain = patch.gain;
   if (typeof patch.sensitivity === 'number') calib.sensitivity = patch.sensitivity;
   if (typeof patch.deadzone === 'number') calib.deadzone = patch.deadzone;
   if (typeof patch.maxSpeed === 'number') calib.maxSpeed = patch.maxSpeed;
+  if (typeof patch.gazeAmplification === 'number') calib.gazeAmplification = patch.gazeAmplification;
 }
 
 export function captureNeutralFromCurrent() {
@@ -262,7 +275,9 @@ export function captureNeutralFromCurrent() {
     calib.neutralX = lastObsNorm.x;
     calib.neutralY = lastObsNorm.y;
     ema.reset();
+    return { x: calib.neutralX, y: calib.neutralY };
   }
+  return null;
 }
 
 export async function getScreen() {
@@ -298,6 +313,7 @@ export async function startHeadTracking(
 ): Promise<void> {
   console.log('[headTracker] startHeadTracking() con eye gaze');
   await stopHeadTracking();
+  ema.reset();
 
   videoRef = videoEl;
 
@@ -319,7 +335,7 @@ export async function startHeadTracking(
   await videoEl.play();
   console.log('[headTracker] Cámara HD iniciada');
 
-  const { width, height } = await window.native.getScreenSize();
+  const { width, height } = await refreshScreenSize();
   currentScreenPos = { x: width / 2, y: height / 2 };
 
   await ensureFaceLandmarker();
@@ -339,9 +355,14 @@ export async function startHeadTracking(
 
       const [smoothX, smoothY] = ema.update(nx, ny);
       lastObsNorm = { x: smoothX, y: smoothY };
+      lastObservationAt = Date.now();
 
-      onPose(smoothX, smoothY);
+      onPose({ nx: smoothX, ny: smoothY });
       onDebug?.(res);
+    } else {
+      lastObsNorm = null;
+      lastObservationAt = 0;
+      onPose(null);
     }
 
     rafId = requestAnimationFrame(loop);
@@ -353,7 +374,7 @@ export async function startHeadTracking(
     console.log('[headTracker] Iniciando movement loop');
     movementLoopRunning = true;
     lastMoveTime = performance.now();
-    requestAnimationFrame(movementLoop);
+    movementRafId = requestAnimationFrame(movementLoop);
   }
 }
 
@@ -365,6 +386,11 @@ export async function stopHeadTracking(): Promise<void> {
   if (rafId !== null) {
     cancelAnimationFrame(rafId);
     rafId = null;
+  }
+
+  if (movementRafId !== null) {
+    cancelAnimationFrame(movementRafId);
+    movementRafId = null;
   }
   
   if (mediaStream) {
@@ -389,5 +415,8 @@ export async function stopHeadTracking(): Promise<void> {
   }
 
   currentScreenPos = null;
+  screenSize = null;
   lastObsNorm = null;
+  lastObservationAt = 0;
+  ema.reset();
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPythonMouseDriver, PythonMouseDriver } from './native-driver.js';
 import { initStore } from './storage/store.js';
-import { initVoice, stopVoice, pauseVoice, resumeVoice, getVoiceStats } from './voice/voice.js';
+import { initVoice, stopVoice, pauseVoice, resumeVoice, getVoiceStats, submitVoiceChunk } from './voice/voice.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,7 +43,7 @@ function registerIpcHandlersOnce() {
         return true;
     });
 
-    safeHandle('native:click', async (_e, { button }: { button?: 'left' | 'right' | 'middle' }) => {
+    safeHandle('native:click', async (_e, { button }: { button?: 'left' | 'right' | 'middle' | 'double' }) => {
         if (!native || !controlEnabled) return false;
         await native.click(button ?? 'left');
         return true;
@@ -67,6 +67,24 @@ function registerIpcHandlersOnce() {
         return true;
     });
 
+    safeHandle('native:typeText', async (_e, { text }: { text?: string }) => {
+        if (!native || !controlEnabled || !text) return false;
+        await native.typeText(text);
+        return true;
+    });
+
+    safeHandle('native:pressKey', async (_e, { key }: { key?: string }) => {
+        if (!native || !controlEnabled || !key) return false;
+        await native.pressKey(key);
+        return true;
+    });
+
+    safeHandle('native:deleteLastWord', async () => {
+        if (!native || !controlEnabled) return false;
+        await native.deleteLastWord();
+        return true;
+    });
+
     safeHandle('voice:toggle', async (_ev, enabled: boolean) => {
         console.log('[IPC] voice:toggle', enabled);
         try {
@@ -74,32 +92,46 @@ function registerIpcHandlersOnce() {
                 const onStats = (msg: string) => {
                     mainWindow?.webContents.send('voice:stats', { message: msg });
                 };
-                initVoice(onStats);
-                return { ok: true };
+                const active = initVoice(onStats);
+                return active
+                    ? { ok: true, active: true, stats: getVoiceStats() }
+                    : { ok: false, active: false, error: 'No se pudo iniciar la voz', stats: getVoiceStats() };
             } else {
                 stopVoice();
-                return { ok: true };
+                return { ok: true, active: false, stats: getVoiceStats() };
             }
         } catch (e: any) {
             console.error('[voice:toggle] Error:', e);
-            return { ok: false, error: e.message };
+            return { ok: false, active: false, error: e.message, stats: getVoiceStats() };
         }
     });
 
     safeHandle('voice:pause', async () => {
         console.log('[IPC] voice:pause');
         pauseVoice();
-        return { ok: true };
+        return { ok: true, active: false, stats: getVoiceStats() };
     });
 
     safeHandle('voice:resume', async () => {
         console.log('[IPC] voice:resume');
         resumeVoice();
-        return { ok: true };
+        return { ok: true, active: true, stats: getVoiceStats() };
     });
 
     safeHandle('voice:stats', async () => {
         return getVoiceStats();
+    });
+
+    safeHandle('voice:chunk', async (_ev, payload: { audioChunk?: Uint8Array | number[]; mimeType?: string }) => {
+        if (!payload?.audioChunk) {
+            return { ok: false, accepted: false, error: 'Audio ausente' };
+        }
+
+        const audioChunk = payload.audioChunk instanceof Uint8Array
+            ? payload.audioChunk
+            : Uint8Array.from(payload.audioChunk);
+
+        return submitVoiceChunk(Buffer.from(audioChunk), payload.mimeType ?? 'audio/webm');
     });
 
     safeHandle('native:mouse', async () => false);
@@ -119,6 +151,7 @@ async function createWindow() {
     const preloadPath = app.isPackaged
         ? path.join(__dirname, 'preload.cjs')
         : path.join(process.cwd(), 'src', 'preload.cjs');
+    const rendererIndexPath = path.join(__dirname, '..', 'renderer', 'index.html');
 
     mainWindow = new BrowserWindow({
         width: 1200,
@@ -134,8 +167,15 @@ async function createWindow() {
     });
 
     try {
-        if (!app.isPackaged) await mainWindow.loadURL('http://localhost:5173');
-        else await mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+        if (!app.isPackaged) {
+            try {
+                await mainWindow.loadURL('http://localhost:5173');
+            } catch {
+                await mainWindow.loadFile(rendererIndexPath);
+            }
+        } else {
+            await mainWindow.loadFile(rendererIndexPath);
+        }
     } catch (err) {
         console.error('Failed to load renderer:', err);
     }
@@ -165,7 +205,6 @@ app.whenReady().then(async () => {
         } catch { }
     }
 
-    initVoice();                     // IPC voz
     await createWindow();
 
     app.on('activate', async () => {
@@ -175,11 +214,13 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
     globalShortcut.unregisterAll();
+    stopVoice();
     try { native?.dispose(); } catch { }
     if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    stopVoice();
     try { native?.dispose(); } catch { }
 });

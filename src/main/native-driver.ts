@@ -8,10 +8,13 @@ type Resp = { id?: number; ok: boolean; error?: string; result?: any };
 
 export type PythonMouseDriver = {
   move(x: number, y: number): Promise<void>;
-  click(button?: 'left' | 'right' | 'middle'): Promise<void>;
+  click(button?: 'left' | 'right' | 'middle' | 'double'): Promise<void>;
   scroll(dx?: number, dy?: number): Promise<void>;
   down(button?: 'left' | 'right' | 'middle'): Promise<void>;
   up(button?: 'left' | 'right' | 'middle'): Promise<void>;
+  typeText(text: string): Promise<void>;
+  pressKey(key: string): Promise<void>;
+  deleteLastWord(): Promise<void>;
   dispose(): void;
 };
 
@@ -19,15 +22,22 @@ export async function getPythonMouseDriver(): Promise<PythonMouseDriver> {
   const here = path.dirname(fileURLToPath(import.meta.url)); 
   const appBase = app.isPackaged ? process.resourcesPath : app.getAppPath();
 
+  const envScript = process.env.PYTHON_MOUSE_SERVER_PATH;
   const candidates = [
-    path.join(process.cwd(), 'py', 'mouse_server.py'),  
-    path.join(here, '..', 'py', 'mouse_server.py'),  
-    path.join(appBase, 'py', 'mouse_server.py'),      
-  ];
+    envScript,
+    path.join(process.cwd(), 'py', 'mouse_server.py'),
+    path.join(here, '..', 'py', 'mouse_server.py'),
+    path.join(appBase, 'py', 'mouse_server.py'),
+  ].filter((candidate): candidate is string => Boolean(candidate));
   const scriptPath = candidates.find(p => fs.existsSync(p)) ?? candidates[0];
 
-  const venvPy = path.resolve(process.cwd(), 'py', '.venv', 'bin', 'python3');
-  const pythonBin = fs.existsSync(venvPy) ? venvPy : 'python3';
+  const pythonCandidates = [
+    process.env.PYTHON_BIN,
+    path.resolve(process.cwd(), 'py', '.venv', 'bin', 'python3'),
+    path.resolve(process.cwd(), 'py', '.venv', 'bin', 'python'),
+    'python3',
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const pythonBin = pythonCandidates.find((candidate) => candidate === 'python3' || fs.existsSync(candidate)) ?? 'python3';
 
   if (!fs.existsSync(scriptPath)) {
     const msg = `mouse_server.py no encontrado.\nBuscado en:\n${candidates.join('\n')}`;
@@ -146,6 +156,15 @@ export async function getPythonMouseDriver(): Promise<PythonMouseDriver> {
     },
     async up(button = 'left') {
       await rpc('up', { button }, 1000);
+    },
+    async typeText(text) {
+      await rpc('type_text', { text }, Math.max(1500, text.length * 40));
+    },
+    async pressKey(key) {
+      await rpc('press_key', { key }, 1000);
+    },
+    async deleteLastWord() {
+      await rpc('delete_last_word', {}, 1000);
     },
     dispose() {
       try {

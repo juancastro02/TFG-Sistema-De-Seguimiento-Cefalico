@@ -16,5 +16,5 @@
     "sourceMap": true
   },
   "include": ["src/main/**/*", "src/renderer/**/*", "src/tracking/**/*", "src/utils/**/*", "src/types/**/*"],
-  "exclude": ["node_modules", "dist", "src/main.ts", "src/native-bridge.ts", "src/preload.ts"]
+  "exclude": ["node_modules", "dist", "src/main.ts"]
 }

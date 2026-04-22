@@ -1,16 +1,6 @@
 import { ipcMain } from 'electron';
 import ElectronStore from 'electron-store';
-
-export type Profile = {
-  id: string;
-  name: string;
-  createdAt: number;
-  sensitivity: number;
-  gain: number;
-  dwellMs: number;
-  voiceEnabled: boolean;
-  headTrackingEnabled: boolean;
-};
+import { createProfile, normalizeProfile, type Profile } from '../../types/profile.js';
 
 type StoreShape = {
   profiles: Profile[];
@@ -29,8 +19,14 @@ const schema = {
         sensitivity: { type: 'number' },
         gain: { type: 'number' },
         dwellMs: { type: 'number' },
+        deadzone: { type: 'number' },
+        maxSpeed: { type: 'number' },
+        gazeAmplification: { type: 'number' },
+        neutralX: { type: 'number' },
+        neutralY: { type: 'number' },
         voiceEnabled: { type: 'boolean' },
-        headTrackingEnabled: { type: 'boolean' }
+        headTrackingEnabled: { type: 'boolean' },
+        autoClickEnabled: { type: 'boolean' }
       }
     }
   },
@@ -39,22 +35,35 @@ const schema = {
 
 let store: ElectronStore<StoreShape> | null = null;
 
+function sanitizeProfiles(rawProfiles: unknown): Profile[] {
+  const input = Array.isArray(rawProfiles) ? rawProfiles : [];
+  const profiles = input.map((profile, index) => normalizeProfile(profile as Partial<Profile>, `profile-${index + 1}`));
+  return profiles.length > 0 ? profiles : [createProfile()];
+}
+
+function sanitizeActiveId(rawActiveId: unknown, profiles: Profile[]) {
+  const activeId = typeof rawActiveId === 'string' ? rawActiveId : null;
+  return profiles.some((profile) => profile.id === activeId) ? activeId : profiles[0]?.id ?? null;
+}
+
+function snapshot() {
+  const s = getStore();
+  const profiles = sanitizeProfiles(s.get('profiles'));
+  const activeId = sanitizeActiveId(s.get('activeId'), profiles);
+
+  s.set('profiles', profiles);
+  s.set('activeId', activeId);
+
+  return { profiles, activeId };
+}
+
 function getStore() {
   if (!store) {
     store = new ElectronStore<StoreShape>({
       name: 'handsfree',
       schema: schema as any,
       defaults: {
-        profiles: [{
-          id: 'default',
-          name: 'Perfil por defecto',
-          createdAt: Date.now(),
-          sensitivity: 1.5,
-          gain: 1.0,
-          dwellMs: 1000,
-          voiceEnabled: true,
-          headTrackingEnabled: true
-        }],
+        profiles: [createProfile()],
         activeId: 'default'
       }
     });
@@ -73,48 +82,43 @@ export function initStore() {
   ipcMain.removeHandler('profiles:apply');
 
   ipcMain.handle('profiles:loadAll', () => {
-    const profiles = s.get('profiles');
-    const activeId = s.get('activeId');
-    return { profiles, activeId };
+    return snapshot();
   });
 
   ipcMain.handle('profiles:saveAll', (_e, profiles: Profile[]) => {
-    s.set('profiles', profiles);
-    if (!profiles.find(p => p.id === s.get('activeId'))) {
-      s.set('activeId', profiles[0]?.id ?? null);
-    }
+    const safeProfiles = sanitizeProfiles(profiles);
+    s.set('profiles', safeProfiles);
+    s.set('activeId', sanitizeActiveId(s.get('activeId'), safeProfiles));
     return true;
   });
 
   ipcMain.handle('profiles:setActive', (_e, id: string) => {
-    s.set('activeId', id);
+    const { profiles } = snapshot();
+    s.set('activeId', sanitizeActiveId(id, profiles));
     return true;
   });
 
   ipcMain.handle('profiles:loadActive', () => {
-    const activeId = s.get('activeId');
-    const profiles = s.get('profiles');
-    const active = profiles.find(p => p.id === activeId) ?? profiles[0];
+    const { profiles, activeId } = snapshot();
+    const active = profiles.find((profile) => profile.id === activeId) ?? profiles[0];
     return active;
   });
 
   ipcMain.handle('profiles:saveActive', (_e, patch: Partial<Profile>) => {
-    const activeId = s.get('activeId');
-    const profiles = s.get('profiles');
-    const idx = profiles.findIndex(p => p.id === activeId);
+    const { profiles, activeId } = snapshot();
+    const idx = profiles.findIndex((profile) => profile.id === activeId);
     if (idx >= 0) {
-      profiles[idx] = { ...profiles[idx], ...patch };
+      profiles[idx] = normalizeProfile({ ...profiles[idx], ...patch }, profiles[idx].id);
       s.set('profiles', profiles);
     }
     return true;
   });
 
   ipcMain.handle('profiles:apply', (_e, patch: Partial<Profile>) => {
-    const activeId = s.get('activeId');
-    const profiles = s.get('profiles');
-    const idx = profiles.findIndex(p => p.id === activeId);
+    const { profiles, activeId } = snapshot();
+    const idx = profiles.findIndex((profile) => profile.id === activeId);
     if (idx >= 0) {
-      profiles[idx] = { ...profiles[idx], ...patch };
+      profiles[idx] = normalizeProfile({ ...profiles[idx], ...patch }, profiles[idx].id);
       s.set('profiles', profiles);
     }
     return true;

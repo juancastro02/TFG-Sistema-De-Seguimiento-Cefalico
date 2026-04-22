@@ -21,20 +21,38 @@ export default function DwellRing({
   const startTimeRef = useRef<number | null>(null)
   const armRef = useRef<number | null>(null)
   const rafRef = useRef<number | null>(null)
+  const completionRef = useRef<number | null>(null)
+  const awaitingMovementResetRef = useRef(false)
 
   const RING = 40
   const ARM_MS = 240
 
   useEffect(() => {
     return () => {
-      reset();
+      clearTimers();
+      awaitingMovementResetRef.current = false;
     };
   }, []);
 
   useEffect(() => {
-    if (!enabled || isPaused || !isStable || isExecuting) { 
-      reset(); 
+    if (!enabled || isPaused) {
+      awaitingMovementResetRef.current = false
+      setIsExecuting(false)
+      reset()
       return;
+    }
+
+    if (!isStable) {
+      if (awaitingMovementResetRef.current) {
+        awaitingMovementResetRef.current = false
+      }
+      setIsExecuting(false)
+      reset()
+      return
+    }
+
+    if (awaitingMovementResetRef.current || isExecuting) {
+      return
     }
 
     if (state === 'idle') {
@@ -57,14 +75,16 @@ export default function DwellRing({
       if (p >= 100 && !isExecuting) {
         setState('completed')
         setIsExecuting(true);
+        clearTimers();
         
         if (enabled) {
           clickFromGesture('left')
             .then(() => {
-              setTimeout(() => {
-                reset();
-                setIsExecuting(false);
-              }, 800);
+              completionRef.current = window.setTimeout(() => {
+                awaitingMovementResetRef.current = true
+                setIsExecuting(false)
+                reset()
+              }, 450);
             })
             .catch((e) => {
               console.error('[DwellRing] Error:', e);
@@ -86,7 +106,10 @@ export default function DwellRing({
   const reset = () => {
     setProgress(0)
     setState('idle')
-    setIsExecuting(false);
+    clearTimers()
+  }
+
+  const clearTimers = () => {
     if (armRef.current) { 
       clearTimeout(armRef.current); 
       armRef.current = null 
@@ -95,6 +118,10 @@ export default function DwellRing({
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current)
       rafRef.current = null
+    }
+    if (completionRef.current) {
+      clearTimeout(completionRef.current)
+      completionRef.current = null
     }
   }
 

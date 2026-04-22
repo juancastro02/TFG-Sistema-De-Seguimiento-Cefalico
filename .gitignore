@@ -25,6 +25,7 @@ pip-log.txt
 
 # ===== Whisper.cpp =====
 whisper.cpp/
+whisper.cpp/build/
 
 # whisper.cpp/build/
 # whisper.cpp/models/*.bin

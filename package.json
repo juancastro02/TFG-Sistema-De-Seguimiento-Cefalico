@@ -6,8 +6,9 @@
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "concurrently -k -n VITE,TS,ELECTRON -c blue,green,magenta \"vite --port 5173\" \"tsc -w --preserveWatchOutput\" \"wait-on dist/main/main.js http://localhost:5173 && electron .\"",
-    "build": "vite build && tsc -p tsconfig.json && cp src/preload.cjs dist/preload.cjs && mkdir -p dist/py && cp -R py/* dist/py",
+    "build": "vite build && tsc -p tsconfig.json && mkdir -p dist/main && cp src/preload.cjs dist/main/preload.cjs && mkdir -p dist/py && cp -R py/* dist/py",
     "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "setup:py": "bash scripts/setup-python.sh",
     "setup:voice": "bash scripts/setup-voice.sh",
     "setup": "npm run setup:py && npm run setup:voice"
